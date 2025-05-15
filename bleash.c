@@ -27,6 +27,8 @@ typedef struct {
     bool background_running;
     int8_t last_rssi;
     bool was_connected;
+    bool running;
+    FuriThread* thread; // Add thread for background monitoring
 } Bleash;
 
 static void log_event(Bleash* b, int8_t rssi) {
@@ -72,6 +74,27 @@ static void draw_callback(Canvas* canvas, void* ctx) {
 
     // Draw controls
     canvas_draw_str(canvas, 2, 60, "OK to toggle | Back to exit");
+}
+
+// Add background worker thread function
+static int32_t bleash_worker(void* context) {
+    Bleash* bleash = (Bleash*)context;
+    while(bleash->running) {
+        if(bleash->background_running) {
+            int8_t rssi = furi_hal_bt_get_rssi();
+            bleash->last_rssi = rssi;
+            bleash->was_connected = (rssi < 0);
+
+            if(rssi < RSSI_THRESHOLD && rssi < 0) {
+                notification_message(bleash->notifications, &sequence_set_vibro_on);
+                log_event(bleash, rssi);
+                furi_delay_ms(100);
+                notification_message(bleash->notifications, &sequence_reset_vibro);
+            }
+        }
+        furi_delay_ms(POLL_INTERVAL_MS);
+    }
+    return 0;
 }
 
 static void input_callback(InputEvent* event, void* ctx) {
@@ -123,34 +146,26 @@ int32_t BLEASH(void* p) {
     view_port_input_callback_set(b.view_port, input_callback, &b);
     gui_add_view_port(b.gui, b.view_port, GuiLayerFullscreen);
 
-    // Main monitoring loop
+    // Create and start background worker thread
+    b.running = true;
+    b.thread = furi_thread_alloc_ex("BleashWorker", 1024, bleash_worker, &b);
+    furi_thread_start(b.thread);
+
+    // Main UI loop
     InputEvent event;
-    bool running = true;
-    while(running) {
-        // Check for exit event
+    while(b.running) {
         if(furi_message_queue_get(b.event_queue, &event, 100) == FuriStatusOk) {
-            if(event.key == InputKeyBack) running = false;
-        }
-
-        if(b.background_running) {
-            int8_t rssi = furi_hal_bt_get_rssi();
-            b.last_rssi = rssi;
-            b.was_connected = (rssi < 0); // Any valid RSSI indicates connection
-
-            // Alert if signal is weak
-            if(rssi < RSSI_THRESHOLD && rssi < 0) {
-                notification_message(b.notifications, &sequence_set_vibro_on);
-                log_event(&b, rssi);
-                furi_delay_ms(100);
-                notification_message(b.notifications, &sequence_reset_vibro);
+            if(event.key == InputKeyBack) {
+                b.running = false; // Signal worker thread to stop
             }
         }
-
         view_port_update(b.view_port);
-        furi_delay_ms(POLL_INTERVAL_MS);
     }
 
     // Cleanup
+    furi_thread_join(b.thread);
+    furi_thread_free(b.thread);
+
     gui_remove_view_port(b.gui, b.view_port);
     view_port_free(b.view_port);
     furi_message_queue_free(b.event_queue);
