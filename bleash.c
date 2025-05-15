@@ -71,7 +71,7 @@ static void draw_callback(Canvas* canvas, void* ctx) {
 
     canvas_draw_str(canvas, 2, 48, b->was_connected ? "Connected" : "Disconnected");
 
-    canvas_draw_str(canvas, 2, 60, "OK to toggle | Back to exit");
+    canvas_draw_str(canvas, 2, 60, "OK to toggle | Bck to exit");
 }
 
 static void save_state(Bleash* b) {
@@ -175,12 +175,22 @@ int32_t BLEASH(void* p) {
     while(b.running) {
         if(furi_message_queue_get(b.event_queue, &event, 100) == FuriStatusOk) {
             if(event.key == InputKeyBack) {
+                // Stop the worker thread first
                 b.running = false;
+                // Wait for thread to finish
+                furi_thread_join(b.thread);
+                furi_thread_free(b.thread);
+                break; // Exit the main loop
             }
         }
         view_port_update(b.view_port);
     }
 
+    // Stop background monitoring
+    b.background_running = false;
+    save_state(&b);
+
+    // Cleanup
     gui_remove_view_port(b.gui, b.view_port);
     view_port_free(b.view_port);
     furi_message_queue_free(b.event_queue);
