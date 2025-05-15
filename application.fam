@@ -11,7 +11,7 @@ App(
     fap_version="0.1",
     fap_icon="bleash.png",  # 10x10 1-bit PNG
     fap_description="Monitor the connection strength of a BLE device and warns when it below a threshold.",
-    fap_author="C0d3-5t3w",  # Author name
+    fap_author="c0d3-5t3w",  # Author name
     fap_weburl="https://github.com/C0d3-5t3w/Bleash",
     fap_icon_assets="images",  # Image assets to compile for this application
 )
