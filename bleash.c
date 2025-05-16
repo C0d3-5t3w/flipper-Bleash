@@ -18,6 +18,20 @@
 #define RSSI_THRESHOLD             -70
 #define POLL_INTERVAL_MS           1000
 #define DEFAULT_BACKGROUND_RUNNING false
+#define BLE_APP_NAME               "BLE Leash"
+#define BACKGROUND_WORKER_STACK    2048
+#define VIEW_UPDATE_INTERVAL       500
+
+typedef enum {
+    BleashEventTypeKey,
+    BleashEventTypeTick,
+    BleashEventTypeExit,
+} BleashEventType;
+
+typedef struct {
+    BleashEventType type;
+    InputEvent input;
+} BleashEvent;
 
 typedef struct {
     FuriMessageQueue* event_queue;
@@ -29,8 +43,12 @@ typedef struct {
     int8_t last_rssi;
     bool was_connected;
     bool running;
+    bool should_exit; // Add new flag for clean exit
     FuriThread* thread;
     FuriMutex* mutex;
+    volatile bool processing; // Add volatile flag for thread sync
+    FuriTimer* update_timer;
+    bool is_active;
 } Bleash;
 
 static void log_event(Bleash* b, int8_t rssi) {
@@ -57,21 +75,65 @@ static void log_event(Bleash* b, int8_t rssi) {
     if(f) storage_file_free(f);
 }
 
+static void draw_battery_indicator(Canvas* canvas, int x, int y, int8_t rssi) {
+    uint8_t bars = ((rssi + 130) / 10);
+    if(bars > 5) bars = 5;
+
+    // Draw battery outline
+    canvas_draw_frame(canvas, x, y, 15, 8);
+    canvas_draw_box(canvas, x + 15, y + 2, 2, 4);
+
+    // Draw battery bars
+    for(uint8_t i = 0; i < bars; i++) {
+        canvas_draw_box(canvas, x + 2 + (i * 3), y + 2, 2, 4);
+    }
+}
+
+static void draw_status_view(Canvas* canvas, Bleash* bleash) {
+    canvas_clear(canvas);
+    canvas_set_font(canvas, FontSecondary);
+
+    // Draw header
+    canvas_draw_str_aligned(canvas, 64, 2, AlignCenter, AlignTop, BLE_APP_NAME);
+    canvas_draw_line(canvas, 0, 11, 128, 11);
+
+    // Draw RSSI and connection status
+    char rssi_str[32];
+    snprintf(rssi_str, sizeof(rssi_str), "Signal: %d dBm", bleash->last_rssi);
+    canvas_draw_str(canvas, 2, 24, rssi_str);
+
+    // Draw signal strength indicator
+    draw_battery_indicator(canvas, 90, 17, bleash->last_rssi);
+
+    // Draw status
+    canvas_set_font(canvas, FontPrimary);
+    if(bleash->background_running) {
+        canvas_draw_str_aligned(
+            canvas,
+            64,
+            38,
+            AlignCenter,
+            AlignCenter,
+            bleash->was_connected ? "Connected" : "No Device");
+    } else {
+        canvas_draw_str_aligned(canvas, 64, 38, AlignCenter, AlignCenter, "Monitoring Off");
+    }
+
+    // Draw controls hint
+    canvas_set_font(canvas, FontSecondary);
+    canvas_draw_str(canvas, 2, 63, "OK: Toggle");
+    canvas_draw_str_aligned(canvas, 126, 63, AlignRight, AlignBottom, "Back: Hide");
+}
+
+static void bleash_update_timer_callback(void* context) {
+    Bleash* bleash = context;
+    BleashEvent event = {.type = BleashEventTypeTick};
+    furi_message_queue_put(bleash->event_queue, &event, 0);
+}
+
 static void draw_callback(Canvas* canvas, void* ctx) {
     Bleash* b = ctx;
-    canvas_clear(canvas);
-    canvas_set_font(canvas, FontPrimary);
-
-    canvas_draw_str(canvas, 2, 12, "BLE Leash Active:");
-    canvas_draw_str(canvas, 2, 24, b->background_running ? "Monitoring" : "Paused");
-
-    char rssi_str[32];
-    snprintf(rssi_str, sizeof(rssi_str), "RSSI: %d dBm", b->last_rssi);
-    canvas_draw_str(canvas, 2, 36, rssi_str);
-
-    canvas_draw_str(canvas, 2, 48, b->was_connected ? "Connected" : "Disconnected");
-
-    canvas_draw_str(canvas, 2, 60, "OK to toggle | Bck to exit");
+    draw_status_view(canvas, b);
 }
 
 static void save_state(Bleash* b) {
@@ -93,8 +155,10 @@ static void load_state(Bleash* b) {
 }
 
 static int32_t bleash_worker(void* context) {
-    Bleash* bleash = (Bleash*)context;
-    while(bleash->running) {
+    Bleash* bleash = context;
+    bleash->processing = true;
+
+    while(!bleash->should_exit) {
         furi_mutex_acquire(bleash->mutex, FuriWaitForever);
         if(bleash->background_running) {
             int8_t rssi = furi_hal_bt_get_rssi();
@@ -111,6 +175,8 @@ static int32_t bleash_worker(void* context) {
         furi_mutex_release(bleash->mutex);
         furi_delay_ms(POLL_INTERVAL_MS);
     }
+
+    bleash->processing = false;
     return 0;
 }
 
@@ -126,7 +192,8 @@ static void input_callback(InputEvent* event, void* ctx) {
                 b->notifications,
                 b->background_running ? &sequence_set_only_green_255 : &sequence_set_only_red_255);
         } else if(event->key == InputKeyBack) {
-            furi_message_queue_put(b->event_queue, &event, FuriWaitForever);
+            b->should_exit = true;
+            b->running = false;
         }
     }
 }
@@ -144,60 +211,64 @@ static bool bleash_init_storage(Bleash* app) {
 
 int32_t BLEASH(void* p) {
     UNUSED(p);
-    Bleash b = {0};
+    Bleash* bleash = malloc(sizeof(Bleash));
+    memset(bleash, 0, sizeof(Bleash));
 
-    b.storage = furi_record_open(RECORD_STORAGE);
-    if(!bleash_init_storage(&b)) {
+    bleash->storage = furi_record_open(RECORD_STORAGE);
+    if(!bleash_init_storage(bleash)) {
         furi_record_close(RECORD_STORAGE);
+        free(bleash);
         return 1;
     }
 
-    b.notifications = furi_record_open(RECORD_NOTIFICATION);
-    b.mutex = furi_mutex_alloc(FuriMutexTypeNormal);
-    load_state(&b);
-    b.last_rssi = 0;
-    b.was_connected = false;
+    bleash->notifications = furi_record_open(RECORD_NOTIFICATION);
+    bleash->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
+    load_state(bleash);
+    bleash->last_rssi = 0;
+    bleash->was_connected = false;
 
-    b.event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
-    b.view_port = view_port_alloc();
-    b.gui = furi_record_open(RECORD_GUI);
-    view_port_draw_callback_set(b.view_port, draw_callback, &b);
-    view_port_input_callback_set(b.view_port, input_callback, &b);
-    gui_add_view_port(b.gui, b.view_port, GuiLayerFullscreen);
+    bleash->event_queue = furi_message_queue_alloc(8, sizeof(InputEvent));
+    bleash->view_port = view_port_alloc();
+    bleash->gui = furi_record_open(RECORD_GUI);
+    view_port_draw_callback_set(bleash->view_port, draw_callback, bleash);
+    view_port_input_callback_set(bleash->view_port, input_callback, bleash);
+    gui_add_view_port(bleash->gui, bleash->view_port, GuiLayerFullscreen);
 
-    b.running = true;
-    if(!b.thread) {
-        b.thread = furi_thread_alloc_ex("BleashWorker", 1024, bleash_worker, &b);
-        furi_thread_start(b.thread);
-    }
+    bleash->running = true;
+    bleash->should_exit = false;
+    bleash->processing = false;
 
-    InputEvent event;
-    while(b.running) {
-        if(furi_message_queue_get(b.event_queue, &event, 100) == FuriStatusOk) {
-            if(event.key == InputKeyBack) {
-                // Stop the worker thread first
-                b.running = false;
-                // Wait for thread to finish
-                furi_thread_join(b.thread);
-                furi_thread_free(b.thread);
-                break; // Exit the main loop
+    // Setup view update timer
+    bleash->update_timer =
+        furi_timer_alloc(bleash_update_timer_callback, FuriTimerTypePeriodic, bleash);
+    furi_timer_start(bleash->update_timer, VIEW_UPDATE_INTERVAL);
+
+    // Start background worker
+    bleash->thread =
+        furi_thread_alloc_ex("BleashWorker", BACKGROUND_WORKER_STACK, bleash_worker, bleash);
+    furi_thread_start(bleash->thread);
+
+    BleashEvent event;
+    while(bleash->running) {
+        if(furi_message_queue_get(bleash->event_queue, &event, 100) == FuriStatusOk) {
+            if(event.type == BleashEventTypeKey) {
+                if(event.input.key == InputKeyBack) {
+                    // Just hide UI but keep monitoring
+                    break;
+                }
+            } else if(event.type == BleashEventTypeTick) {
+                view_port_update(bleash->view_port);
             }
         }
-        view_port_update(b.view_port);
     }
 
-    // Stop background monitoring
-    b.background_running = false;
-    save_state(&b);
-
-    // Cleanup
-    gui_remove_view_port(b.gui, b.view_port);
-    view_port_free(b.view_port);
-    furi_message_queue_free(b.event_queue);
-    furi_mutex_free(b.mutex);
+    // Cleanup UI but keep worker running
+    furi_timer_free(bleash->update_timer);
+    gui_remove_view_port(bleash->gui, bleash->view_port);
+    view_port_free(bleash->view_port);
+    furi_message_queue_free(bleash->event_queue);
     furi_record_close(RECORD_GUI);
-    furi_record_close(RECORD_NOTIFICATION);
-    furi_record_close(RECORD_STORAGE);
 
+    // Keep other services for background operation
     return 0;
 }
