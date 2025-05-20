@@ -1,6 +1,8 @@
 #include <furi.h>
 #include <furi_hal.h>
 #include <furi_hal_bt.h>
+#include <bt/bt_service/bt.h>
+#include <bt/bt_service/bt_keys_storage.h>
 #include <input/input.h>
 #include <storage/storage.h>
 #include <notification/notification.h>
