@@ -111,11 +111,9 @@ static void draw_battery_indicator(Canvas* canvas, int x, int y, int8_t rssi) {
     uint8_t bars = ((rssi + 130) / 10);
     if(bars > 5) bars = 5;
 
-    // Draw battery outline
     canvas_draw_frame(canvas, x, y, 15, 8);
     canvas_draw_box(canvas, x + 15, y + 2, 2, 4);
 
-    // Draw battery bars
     for(uint8_t i = 0; i < bars; i++) {
         canvas_draw_box(canvas, x + 2 + (i * 3), y + 2, 2, 4);
     }
@@ -125,11 +123,9 @@ static void draw_status_view(Canvas* canvas, Bleash* bleash) {
     canvas_clear(canvas);
     canvas_set_font(canvas, FontSecondary);
 
-    // Draw header
     canvas_draw_str_aligned(canvas, 64, 2, AlignCenter, AlignTop, BLE_APP_NAME);
     canvas_draw_line(canvas, 0, 11, 128, 11);
 
-    // Draw connection status
     const char* status_str = "Unknown";
     switch(bleash->bt_status) {
     case BtStatusOff:
@@ -148,17 +144,14 @@ static void draw_status_view(Canvas* canvas, Bleash* bleash) {
 
     canvas_draw_str(canvas, 2, 24, status_str);
 
-    // Draw RSSI if connected
     if(bleash->bt_status == BtStatusConnected || bleash->last_rssi > -127) {
         char rssi_str[32];
         snprintf(rssi_str, sizeof(rssi_str), "Signal: %d dBm", bleash->last_rssi);
         canvas_draw_str(canvas, 2, 36, rssi_str);
 
-        // Draw signal strength indicator
         draw_battery_indicator(canvas, 90, 29, bleash->last_rssi);
     }
 
-    // Draw monitoring status
     canvas_set_font(canvas, FontPrimary);
     if(bleash->background_running) {
         canvas_draw_str_aligned(canvas, 64, 48, AlignCenter, AlignCenter, "Monitoring ON");
@@ -166,7 +159,6 @@ static void draw_status_view(Canvas* canvas, Bleash* bleash) {
         canvas_draw_str_aligned(canvas, 64, 48, AlignCenter, AlignCenter, "Monitoring OFF");
     }
 
-    // Draw controls hint
     canvas_set_font(canvas, FontSecondary);
     canvas_draw_str(canvas, 2, 55, "OK: Toggle");
     canvas_draw_str_aligned(canvas, 126, 55, AlignRight, AlignBottom, "Back: Hide");
@@ -218,11 +210,9 @@ static int32_t bleash_worker(void* context) {
         furi_mutex_acquire(bleash->mutex, FuriWaitForever);
 
         if(bleash->background_running) {
-            // Check BLE connection status safely
             bool bt_active = false;
             bool bt_available = false;
 
-            // Try to check BT status with error handling
             if(furi_hal_bt_is_gatt_gap_supported()) {
                 bt_active = furi_hal_bt_is_active();
                 bt_available = true;
@@ -234,37 +224,31 @@ static int32_t bleash_worker(void* context) {
             if(bt_available) {
                 bleash->was_connected = (bleash->bt_status == BtStatusConnected);
 
-                // Calculate mock RSSI based on connection state
                 if(bleash->was_connected) {
-                    bleash->last_rssi = -45; // Mock good signal when connected
+                    bleash->last_rssi = -45;
                 } else if(bt_active) {
-                    bleash->last_rssi = -75; // Mock weak signal when advertising
+                    bleash->last_rssi = -75;
                 } else {
-                    bleash->last_rssi = -127; // No signal
+                    bleash->last_rssi = -127;
                 }
 
-                // Alert on weak signal if connected
                 if(bleash->was_connected && bleash->last_rssi < RSSI_THRESHOLD) {
                     FURI_LOG_W(TAG, "Weak signal detected: %d dBm", bleash->last_rssi);
 
-                    // Safe notification calls
                     if(bleash->notifications) {
                         notification_message(bleash->notifications, &sequence_set_vibro_on);
                         log_event(bleash, bleash->last_rssi);
                         furi_delay_ms(200);
                         notification_message(bleash->notifications, &sequence_reset_vibro);
 
-                        // Brief red blink
                         notification_message(bleash->notifications, &sequence_blink_red_10);
                     }
                 }
 
-                // Alert on complete disconnection
                 if(!bt_active && bleash->was_connected) {
                     FURI_LOG_W(TAG, "BLE connection lost");
 
                     if(bleash->notifications) {
-                        // Double vibrate pattern
                         notification_message(bleash->notifications, &sequence_set_vibro_on);
                         furi_delay_ms(150);
                         notification_message(bleash->notifications, &sequence_reset_vibro);
@@ -277,7 +261,6 @@ static int32_t bleash_worker(void* context) {
                     }
                 }
             } else {
-                // BT not available
                 bleash->last_rssi = -127;
                 bleash->was_connected = false;
                 FURI_LOG_W(TAG, "BT not available");
@@ -302,17 +285,14 @@ static void input_callback(InputEvent* event, void* ctx) {
             save_state(b);
             furi_mutex_release(b->mutex);
 
-            // Provide feedback with LED color
             notification_message(
                 b->notifications,
                 b->background_running ? &sequence_blink_green_10 : &sequence_blink_red_10);
         } else if(event->key == InputKeyBack) {
-            // Just hide GUI, keep monitoring in background
             b->running = false;
         }
     } else if(event->type == InputTypeLong) {
         if(event->key == InputKeyBack) {
-            // Long press Back = full exit
             b->should_exit = true;
             b->running = false;
         }
@@ -335,7 +315,6 @@ int32_t BLEASH(void* p) {
     Bleash* bleash = malloc(sizeof(Bleash));
     memset(bleash, 0, sizeof(Bleash));
 
-    // Initialize storage first
     bleash->storage = furi_record_open(RECORD_STORAGE);
     if(!bleash_init_storage(bleash)) {
         furi_record_close(RECORD_STORAGE);
@@ -343,7 +322,6 @@ int32_t BLEASH(void* p) {
         return 1;
     }
 
-    // Initialize BT service
     bleash->bt = furi_record_open(RECORD_BT);
     if(!bleash->bt) {
         FURI_LOG_E(TAG, "Failed to open BT record");
@@ -352,20 +330,16 @@ int32_t BLEASH(void* p) {
         return 1;
     }
 
-    // Initialize other services
     bleash->notifications = furi_record_open(RECORD_NOTIFICATION);
     bleash->mutex = furi_mutex_alloc(FuriMutexTypeNormal);
 
-    // Set up BT status callback
     bt_set_status_changed_callback(bleash->bt, bt_status_changed_callback, bleash);
 
-    // Load saved state and initialize
     load_state(bleash);
-    bleash->last_rssi = -127; // Initialize to no signal
+    bleash->last_rssi = -127;
     bleash->was_connected = false;
     bleash->bt_status = BtStatusOff;
 
-    // Set up GUI
     bleash->event_queue = furi_message_queue_alloc(8, sizeof(BleashEvent));
     bleash->view_port = view_port_alloc();
     bleash->gui = furi_record_open(RECORD_GUI);
@@ -377,17 +351,14 @@ int32_t BLEASH(void* p) {
     bleash->should_exit = false;
     bleash->processing = false;
 
-    // Setup view update timer
     bleash->update_timer =
         furi_timer_alloc(bleash_update_timer_callback, FuriTimerTypePeriodic, bleash);
     furi_timer_start(bleash->update_timer, VIEW_UPDATE_INTERVAL);
 
-    // Start background worker
     bleash->thread =
         furi_thread_alloc_ex("BleashWorker", BACKGROUND_WORKER_STACK, bleash_worker, bleash);
     furi_thread_start(bleash->thread);
 
-    // Main event loop
     BleashEvent event;
     while(bleash->running) {
         if(furi_message_queue_get(bleash->event_queue, &event, 100) == FuriStatusOk) {
@@ -401,7 +372,6 @@ int32_t BLEASH(void* p) {
         }
     }
 
-    // Clean up GUI (but keep worker running if not fully exiting)
     if(bleash->update_timer) {
         furi_timer_stop(bleash->update_timer);
         furi_timer_free(bleash->update_timer);
@@ -427,20 +397,16 @@ int32_t BLEASH(void* p) {
         bleash->gui = NULL;
     }
 
-    // Check if we should fully exit or just hide GUI
     if(bleash->should_exit) {
         FURI_LOG_I(TAG, "Fully exiting app");
 
-        // Signal worker to stop
         bleash->should_exit = true;
 
-        // Wait for worker to finish
         if(bleash->thread) {
             furi_thread_join(bleash->thread);
             furi_thread_free(bleash->thread);
         }
 
-        // Clean up remaining services
         if(bleash->bt) {
             bt_set_status_changed_callback(bleash->bt, NULL, NULL);
             furi_record_close(RECORD_BT);
@@ -461,13 +427,6 @@ int32_t BLEASH(void* p) {
         free(bleash);
     } else {
         FURI_LOG_I(TAG, "Hiding GUI, keeping worker running in background");
-
-        // Keep worker and core services running
-        // The app will continue monitoring in background
-
-        // Note: In a real implementation, you might want to set up a way
-        // to restore the GUI later, perhaps through a system menu entry
-        // or by detecting when the app is launched again
     }
 
     return 0;
