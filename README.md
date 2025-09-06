@@ -7,7 +7,6 @@ A Bluetooth leash application for the Flipper Zero that monitors BLE connection 
 - Real-time BLE connection status monitoring
 - RSSI (Signal Strength) tracking and visualization
 - Configurable distance threshold alerts
-- True background monitoring capability
 - Vibration and LED alerts for weak signals and disconnections
 - Automatic event logging with timestamps and BT status
 - Persistent state saving (remembers monitoring status)
@@ -17,12 +16,12 @@ A Bluetooth leash application for the Flipper Zero that monitors BLE connection 
 
 1. Clone this repository:
 ```bash
-git clone https://github.com/C0d3-5t3w/Bleash.git
+git clone https://github.com/C0d3-5t3w/flipper-Bleash.git
 ```
 
 2. Build using Flipper Build Tool (fbt):
 ```bash
-cd Bleash
+cd flipper-Bleash
 ufbt
 ```
 
